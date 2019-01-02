@@ -1,0 +1,5 @@
+# udev rule file: place in /etc/udev/rules.d
+# Looking Glass superstereoscopic display
+# Note: USB ID is Microchip owned. Unknown if it is required 
+# to also verify name strings.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="ef7e", MODE="0660", GROUP="plugdev"
