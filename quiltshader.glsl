@@ -12,8 +12,8 @@
 // TODO: Fill these in from HID calibration data.
 const float tilt = -0.12039111681976107; //{tilt};
 const float pitch = 370.66407267416486; //{pitch};
-const float center = 0.13695651292800903; //{center};
-const float subp = 1.0 / (3*2560); //{subp};
+const float center = 0.13695651292800903 + tilt*pitch; //{center};
+const float subp = 1.0 / (3*2560) * pitch; //{subp};
 
 // not all the streams are 5x9 quilts.
 // For instance Baby* is 4x8
@@ -33,7 +33,7 @@ vec2 quilt_map(vec2 pos, float a) {
 vec4 hook() {
   vec4 res;
   float a;
-  a = (HOOKED_pos.x + (1.0 - HOOKED_pos.y)*tilt)*pitch - center;
+  a = (HOOKED_pos.x + HOOKED_pos.y*tilt)*pitch - center;
   res.x = HOOKED_tex(quilt_map(HOOKED_pos, a)).x;
   res.y = HOOKED_tex(quilt_map(HOOKED_pos, a+subp)).y;
   res.z = HOOKED_tex(quilt_map(HOOKED_pos, a+2*subp)).z;
