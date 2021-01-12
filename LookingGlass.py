@@ -11,6 +11,7 @@ class LookingGlassHID:
             if dev.product_string == product_string:
                 self.hiddev = hidapi.Device(dev)
                 self.calibration = self.loadconfig()
+                self.calculate_derived()
                 break
         else:
             raise IOError("Looking Glass HID device not found")
@@ -31,6 +32,14 @@ class LookingGlassHID:
             l = min(64, jsonlen-64*page)
             data[64*page:] = self.readpage(page, l)
         return json.loads(data[4:].decode('ascii'))
+
+    def calculate_derived(self):
+        # Parse odd value-object format from json
+        cfg = {key: value['value'] if isinstance(value, dict) else value for (key,value) in self.calibration.items()}
+        # Calculate derived parameters
+        cfg['tilt'] = cfg['screenH'] / cfg['screenW'] * cfg['slope']
+        # Store configuration
+        self.configuration = cfg
 
     def get_buttons(self):
         """Reads buttons (4 bits) from LG HID (blocking!)"""
@@ -59,11 +68,76 @@ class LookingGlassHID:
         assert r[1:4] == send[:3]
         return r[4:4+size]
 
+    def shader(self, target='mpv', **extra):
+        return shaders[target].format(**self.configuration, **extra)
+
+shaders = {'mpv': """
+// mpv glsl shader hook for looking glass
+// Usage sample:
+//  mpv --screen=1 --fs-screen=1 --fs --glsl-shader=quiltshader.glsl --no-keepaspect *.mp4
+// Decent sample frame: Holo Reality at 26 seconds, -ss 26 Holo*.mp4
+
+//!HOOK MAINPRESUB
+//!DESC Looking Glass Quilt renderer
+//!BIND HOOKED
+//!WIDTH {screenW}
+//!HEIGHT {screenH}
+
+// TODO: Fill these in from HID calibration data.
+const float tilt = - {screenH}/{screenW} / {slope};
+const float pitch = {screenW}/{DPI} * {pitch} * sin(atan({slope}));
+const float center = fract({center} + tilt*pitch);
+const float subp = 1.0 / (3*{screenW}) * pitch;
+
+// not all the streams are 5x9 quilts.
+// For instance Baby* is 4x8
+
+const vec2 tiles = vec2({tilesX},{tilesY});
+
+vec2 quilt_map(vec2 pos, float a) {{
+  // Y major positive direction, X minor negative direction
+  vec2 tile = vec2(tiles.x-1,0), dir=vec2(-1,1);
+  a = fract(a)*tiles.y;
+  tile.y += dir.y*floor(a);
+  a = fract(a)*tiles.x;
+  tile.x += dir.x*floor(a);
+  return (tile+pos)/tiles;
+}}
+
+vec4 hook() {{
+  vec4 res;
+  float a;
+  a = (HOOKED_pos.x + HOOKED_pos.y*tilt)*pitch - center;
+  res.r = HOOKED_tex(quilt_map(HOOKED_pos, a)).r;
+  res.g = HOOKED_tex(quilt_map(HOOKED_pos, a+subp)).g;
+  res.b = HOOKED_tex(quilt_map(HOOKED_pos, a+2*subp)).b;
+  res.a = 1.0;
+  return res;
+}}
+""",
+}
+
 if __name__ == '__main__':
     from pprint import pprint
 
     lg = LookingGlassHID()
-    pprint(lg.calibration)
-    print("Reading buttons:")
-    while True:
-        print('\r{:04b}'.format(lg.get_buttons()), end='', flush=True)
+    #pprint(lg.calibration)
+
+    from sys import argv
+
+    if argv[1:] == ["buttons"]:
+        print("Reading buttons:")
+        while True:
+            print('\r{:04b}'.format(lg.get_buttons()), end='', flush=True)
+
+    # TODO: mpv wrapper
+    if argv[1:2] == ['mpv']:
+        # Sizes: 4x8, 5x9
+        import tempfile, subprocess
+        # TODO: find screen, parameterise quilt size
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.glsl') as f:
+            f.write(lg.shader('mpv', tilesX=4, tilesY=8))
+            f.flush()
+
+            subprocess.call(argv[1:2] + ['--screen=1', '--fs-screen=1', '--fs',
+                                         '--glsl-shader='+f.name, '--no-keepaspect'] + argv[2:])
