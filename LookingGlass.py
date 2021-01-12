@@ -1,5 +1,7 @@
 import json
+import re
 import struct
+import subprocess
 
 # Note: Use libhidapi-hidraw, i.e. hidapi with hidraw support,
 # or the joystick device will be gone when execution finishes.
@@ -71,6 +73,20 @@ class LookingGlassHID:
     def shader(self, target='mpv', **extra):
         return shaders[target].format(**self.configuration, **extra)
 
+    def screen(self):
+        # Try to find the Looking Glass monitor
+        monitors = subprocess.run(["xrandr", "--listactivemonitors"], capture_output=True, text=True).stdout
+        for m in re.finditer(r'^ (?P<screen>[0-9]+): \S+ (?P<w>\d+)/\d+x(?P<h>\d+)/\d+\+(?P<x>\d+)\+(?P<y>\d+)\s+(?P<connector>\S+)',
+                             monitors, re.MULTILINE):
+            m = {k: int(v) if v.isdecimal() else v for (k,v) in m.groupdict().items()}
+            if (m['w'] == self.configuration['screenW'] and
+                m['h'] == self.configuration['screenH']):
+                # TODO: Double-check EDID
+                return m
+        else:
+            raise IOError("Can't find matching screen")
+
+
 shaders = {'mpv': """
 // mpv glsl shader hook for looking glass
 // Usage sample:
@@ -133,11 +149,13 @@ if __name__ == '__main__':
     # TODO: mpv wrapper
     if argv[1:2] == ['mpv']:
         # Sizes: 4x8, 5x9
-        import tempfile, subprocess
-        # TODO: find screen, parameterise quilt size
+        import tempfile
+        screen = lg.screen()
+
+        # TODO: parameterise quilt size
         with tempfile.NamedTemporaryFile(mode='w', suffix='.glsl') as f:
             f.write(lg.shader('mpv', tilesX=4, tilesY=8))
             f.flush()
 
-            subprocess.call(argv[1:2] + ['--screen=1', '--fs-screen=1', '--fs',
+            subprocess.call(argv[1:2] + ['--geometry={w}x{h}+{x}+{y}'.format(**screen), '--fs',
                                          '--glsl-shader='+f.name, '--no-keepaspect'] + argv[2:])
