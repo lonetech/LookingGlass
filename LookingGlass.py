@@ -137,9 +137,11 @@ if __name__ == '__main__':
     from pprint import pprint
 
     lg = LookingGlassHID()
-    #pprint(lg.calibration)
 
     from sys import argv
+
+    if not argv[1:] or argv[1:] == ["calibration"]:
+        pprint(lg.calibration)
 
     if argv[1:] == ["buttons"]:
         print("Reading buttons:")
