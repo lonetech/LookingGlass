@@ -1,5 +1,11 @@
 # Rendering concerns
 
+The shader was originally written for MPV, which used texCoords 0..1 range. 
+MPV didn't give access to hook the vertex shader. A more efficient shader 
+is easily possible by moving calculations from the fragment shader 
+to the vertex shader. 
+
+
 Long Z distance between the optical surfaces; lenslet is thin, block is not.
 
 We calculate $a$ as subpixel position across the lens. 
@@ -132,3 +138,84 @@ The Windows version actually already extracts display names, but doesn't pass th
 [17:26]reg.cs:Yeah. You need to call it twice. Have a look in freeHPC.py. It does exactly that
 
 The Mac version retrieves NSScreen, which does have name and position. This seems the simplest platform. 
+
+
+# The path of the light through a Looking Glass
+
+We start out at a subpixel. This has a position in X,Y which GLSL receives as in vec2 texCoords. 
+texCoords has a range from 0 to 1 (arbitrary; the vertex shader mapped it from -1..+1). 
+The subpixels have different placement. flipSubp indicates RGB or BGR order. 
+So X moves 1/3 pixel per channel. That gives the physical X location, which combined with Y forms 
+our texture coordinates. 
+
+The ray goes straight out from the image modulator and colour filter into a lenticular sheet. 
+This sheet can be regarded as thin, and is mounted at some angle to the display. We can express 
+these parameters by 3 values: pitch, slope and center. 
+
+Next, we need to handle points in relation to the lenticular sheet. 
+
+	slope = tan(sheetangle)
+	alonglenslet = [ 1 slope ]
+	acrosslenslet = [ slope -1 ]
+
+    lensletvector = [ slope*pitch  pitch  center ]
+
+To find the position across the lenticular sheet of a particular sample, in units of one lenslet,
+we take (X*slope + Y) * pitch + center. This can be done with a vector dot product:
+
+    a = lensletvector dot [ X Y 1 ]
+
+The ray is then refracted at an angle. Which particular angle depends on the lens and wavelength, 
+as well as this position across the lenslet. 
+It is helpful in the math to keep it around the center. The actual angle of deflection is then 
+dependent of the lens shape, but we can approximate it as linear, and just scale it with the 
+range of light directions (viewCone, a value in degrees) to produce the angle. 
+
+    angle = viewCone * (a-round(a)) * wavelenthfactor
+
+The integer portion we removed here indicates which lenslet the ray is passing through. 
+
+The Looking Glass has a large block with high index of refraction, which will amplify the deflection 
+when the ray passes into the air. However, this is quite a thick block, so the ray travels some 
+distance at the initial angle. This modifies the point from which the ray leaves the display. 
+
+    ST = XY + angle * thicknessfactor * lensletvector.xy
+
+This thickness factor was previously assumed to be 0. It needs to be calibrated too. 
+
+Now we have the position from which light is visible, which is typically the ST coordinates on 
+a texture. But we need to know which texture. That's a format specific transformation based on 
+`a`. The current shader just maps it linearly to the available views:
+
+    view = (a + 0.5) * views
+
+However, there's another complication here. The views rendered each are a normal perspective 
+picture, with a viewpoint positioned somewhere relative to the display. If we consider the 
+central view, an observer there has a view vector of `[ S T observerdistance ]`. Those are 
+thus the points where the rays must show the central view. This must now be matched up with 
+which horisontal observer position sees each subpixel. 
+
+The ray we've been calculating so far is that going straight out. The lenslet is linear, 
+so it's actually one of many rays from that subpixel, all spread out in a plane. That 
+plane thus contains our ray, and has a slant in common with the lenslet. 
+
+    viewvector = [ S T observerdistance ]
+    ray plane intersects point [ S T 0 ]
+	[ lensletvector.y -lensletvector.x 0 ] is parallel with ray plane	
+
+The direction of the ray from each texel is view dependent. It is:
+
+    texelvector(S T viewObserverX observerdistance) = [ viewObserverX 0 observerdistance ] - [ S T 0 ]
+
+viewObserverX and observerdistance are properties of the view's perspective. observerdistance 
+is assumed constant across all views. 
+
+We want to find the point where the observer viewpoint line intersects with the ray plane. 
+If we find a perpendicular vector:
+
+	raynormal = outraydir cross [ lensletvector.y -lensletvector.x 0 ]
+	raynormal dot [ S T 0 ] = raynormal dot [ viewObserverX 0 observerdistance ]
+
+outraydir is the direction of our reference ray after it passes out into the air.
+
+	outraydir = refract(norm(ST-XY), [0 0 1], eta)
